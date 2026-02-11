@@ -9,6 +9,7 @@ from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from moveit_msgs.srv import GetPositionFK, GetPositionFKRequest
 from kortex_driver.msg import TwistCommand, Twist
+import matplotlib.pyplot as plt
 
 try:
     import PyKDL as kdl
@@ -64,6 +65,16 @@ class PushCube():
         rospy.Subscriber('/my_gen3_lite/joint_states', JointState, self.state_callback)
         
         self.twist_pub = rospy.Publisher('/my_gen3_lite/in/cartesian_velocity', TwistCommand, queue_size=1)
+        
+        # History parameters
+        self.history_len = 100
+        # Initialize velocity and acceleration buffers (100 samples, 6 components each)
+        self._ee_vel_a_his = np.zeros((self.history_len, 6))
+        self._ee_accel_a_his = np.zeros((self.history_len, 6))
+        
+        # Buffers for finite difference calculation
+        self._prev_ee_vel_w = np.zeros(6) # Spatial velocity in world frame
+        self._last_vel_time = None
 
     def state_callback(self, msg):
         temp = [0.0]*6
@@ -179,6 +190,13 @@ class PushCube():
         # direction_xy=[0.0, 1.0] moves the robot forward along the Y (Green) axis
         self.execute_velocity_push(direction_xy=[0.0, -1.0], push_dist=0.1, target_vel=0.03)
         rospy.sleep(0.1)
+
+        # Identifies the window around peak impact
+        start_t, _ = self.get_start_end_t(t_before=-15, t_after=35)
+        # Trigger the visualization
+        rospy.loginfo("Visualizing Captured Histories...")
+        self.visualize_push_history(start_t, window_len=50)
+
         rospy.loginfo("PHASE 4: Moving to start position")
         self.go_sp()
         
@@ -206,6 +224,8 @@ class PushCube():
                        start_pose.orientation.z, start_pose.orientation.w]
         target_z = start_pose.position.z
 
+        self._prev_joint_pos_for_accel = np.array(self.current_joint_positions)
+        self._prev_ee_vel_w = np.zeros(6)
 
         rospy.loginfo(f"[VEL PUSH] Starting. Direction: {direction_xy} | Target Z: {target_z:.4f}")
 
@@ -244,6 +264,10 @@ class PushCube():
             cmd.twist.angular_x = v_angular[0]
             cmd.twist.angular_y = v_angular[1]
             cmd.twist.angular_z = v_angular[2]
+            
+            # Update history buffers exactly like Isaac Lab logic
+            q_curr = np.array(self.current_joint_positions)
+            self.update_history(curr_pose, q_curr, target_quat, dt)
 
             # --- DEBUG PRINT (Every 10 steps) ---
             if step_count % 10 == 0:
@@ -262,7 +286,120 @@ class PushCube():
         self.twist_pub.publish(TwistCommand())
         rospy.loginfo(f"[VEL PUSH] Finished. Total Traveled: {traveled:.4f}")
 
-    ####### fixed position #######
+    def update_history(self, curr_pose, q_curr, target_quat_w, dt):
+        # 1. Get current spatial velocity in WORLD frame
+        # For Gen3 Lite, we get this from the Jacobian: V = J * q_dot
+        # Note: Since you are in a velocity loop, you can use the q_dot you just calculated
+        J = self.j_solver.get_jacobian(q_curr)
+        q_dot_actual = (np.array(self.current_joint_positions) - self._prev_joint_pos_for_accel) / dt
+        self._prev_joint_pos_for_accel = np.array(self.current_joint_positions)
+        
+        V_w = J @ q_dot_actual # 6D Twist in world frame [v_x, v_y, v_z, w_x, w_y, w_z]
+        
+        # 2. Calculate Spatial Acceleration in WORLD frame (Finite Difference)
+        V_dot_w = (V_w - self._prev_ee_vel_w) / dt
+        self._prev_ee_vel_w = V_w.copy()
+        
+        # 3. Transform to Push Set Frame {a} (Rotation only)
+        # Mirroring Isaac Lab: ee_lin_vel_pushset = quat_apply(push_set_inv_quat, ee_lin_vel_w)
+        # ROS quat_conjugate/multiply uses [x,y,z,w]
+        inv_q_a_w = tf_trans.quaternion_conjugate(target_quat_w)
+        
+        # Split into Linear/Angular for transformation
+        v_w_lin = V_w[:3]
+        v_w_ang = V_w[3:]
+        a_w_lin = V_dot_w[:3]
+        a_w_ang = V_dot_w[3:]
+        
+        # Transform linear and angular components
+        # We need to rotate these vectors by the inverse of the push_set orientation
+        def rotate_vec(q, v):
+            # Helper to rotate vector by quaternion
+            v_quat = list(v) + [0.0]
+            return tf_trans.quaternion_multiply(tf_trans.quaternion_multiply(q, v_quat), tf_trans.quaternion_conjugate(q))[:3]
+
+        V_a = np.concatenate([rotate_vec(inv_q_a_w, v_w_lin), rotate_vec(inv_q_a_w, v_w_ang)])
+        V_dot_a = np.concatenate([rotate_vec(inv_q_a_w, a_w_lin), rotate_vec(inv_q_a_w, a_w_ang)])
+
+        # 4. Update Rolling History Buffers
+        # Mirroring Isaac Lab: self._ee_vel_a_his = roll(..., shifts=-6, dims=1)
+        self._ee_vel_a_his = np.roll(self._ee_vel_a_his, -1, axis=0)
+        self._ee_vel_a_his[-1] = V_a
+        
+        self._ee_accel_a_his = np.roll(self._ee_accel_a_his, -1, axis=0)
+        self._ee_accel_a_his[-1] = V_dot_a
+        
+    def get_start_end_t(self, t_before=15, t_after=35):
+        """
+        Identifies the window of interest around the peak end-effector acceleration.
+        Mirroring the logic of finding t_peak and defining a window.
+        """
+        # 1. Get the linear acceleration history along the push axis
+        # In your case, self._ee_accel_a_his is (100, 6) -> [ax, ay, az, wx, wy, wz]
+        acc_x_history = self._ee_accel_a_his[:, 1] 
+        
+        # 2. Find index of Max Acceleration Magnitude (t_peak)
+        # Using absolute value to find the point of highest impact
+        t_peak_index = np.argmax(np.abs(acc_x_history))
+        
+        # 3. Define Start and End indices
+        # We use np.clip to ensure indices stay within the buffer bounds [0, 99]
+        seq_len = self.history_len # which is 100
+        
+        start_t = np.clip(t_peak_index + t_before, 0, seq_len - 1)
+        end_t   = np.clip(t_peak_index + t_after, 0, seq_len - 1)
+        
+        # Debugging print for the identified window
+        rospy.loginfo(f"[ANALYSIS] Peak Acc at index: {t_peak_index}")
+        rospy.loginfo(f"[ANALYSIS] Window defined: {start_t} to {end_t}")
+        
+        return int(start_t), int(end_t)
+
+    def visualize_push_history(self, start_t, window_len=50):
+        """
+        Visualizes all 6 axes of the End Effector Velocity and Acceleration.
+        Linear: X (0), Y (1), Z (2) | Angular: Wx (3), Wy (4), Wz (5)
+        """
+        # --- CONFIGURATION ---
+        end_t = min(start_t + window_len, self.history_len)
+        time_indices = np.arange(start_t, end_t)
+        labels = ['Linear X', 'Linear Y', 'Linear Z', 'Angular X', 'Angular Y', 'Angular Z']
+        units = ['m/s', 'm/s', 'm/s', 'rad/s', 'rad/s', 'rad/s']
+        acc_units = ['m/s^2', 'm/s^2', 'm/s^2', 'rad/s^2', 'rad/s^2', 'rad/s^2']
+
+        # Create two figures: one for Velocity, one for Acceleration
+        fig_vel, axes_vel = plt.subplots(6, 1, figsize=(10, 15), sharex=True)
+        fig_acc, axes_acc = plt.subplots(6, 1, figsize=(10, 15), sharex=True)
+
+        for i in range(6):
+            # Velocity Data
+            full_vel = self._ee_vel_a_his[:, i]
+            win_vel = self._ee_vel_a_his[start_t:end_t, i]
+            
+            axes_vel[i].plot(full_vel, label='Full History', color='gray', alpha=0.3)
+            axes_vel[i].plot(time_indices, win_vel, 'b-o', label='Push Window', markersize=3)
+            axes_vel[i].set_ylabel(f"{units[i]}")
+            axes_vel[i].set_title(f"Velocity: {labels[i]}")
+            axes_vel[i].grid(True, alpha=0.3)
+
+            # Acceleration Data
+            full_acc = self._ee_accel_a_his[:, i]
+            win_acc = self._ee_accel_a_his[start_t:end_t, i]
+            
+            axes_acc[i].plot(full_acc, label='Full History', color='gray', alpha=0.3)
+            axes_acc[i].plot(time_indices, win_acc, 'r-o', label='Push Window', markersize=3)
+            axes_acc[i].set_ylabel(f"{acc_units[i]}")
+            axes_acc[i].set_title(f"Acceleration: {labels[i]}")
+            axes_acc[i].grid(True, alpha=0.3)
+
+        axes_vel[5].set_xlabel("Time Step")
+        axes_acc[5].set_xlabel("Time Step")
+        
+        fig_vel.tight_layout()
+        fig_acc.tight_layout()
+        plt.show()
+
+    ####### fixed position control #######
 
     def go_sp(self):
         self.arm_group.set_joint_value_target([-0.08498747219394814, -0.2794001977631106,

@@ -77,6 +77,13 @@ class PushCube():
         self._prev_ee_vel_w = np.zeros(6) # Spatial velocity in world frame
         self._last_vel_time = None
 
+        self.t_before = 15
+        self.t_after = 35
+        
+        # Initialize a buffer for the moving average (e.g., window size of 5)
+        self.smoothing_window = 10
+        self._vel_buffer = []
+
     def state_callback(self, msg):
         temp = [0.0]*6
         found = 0
@@ -190,17 +197,19 @@ class PushCube():
         # self.go_pushset_right()
         # self.execute_velocity_push_lr(direction_xy=[0.0, 1.0], push_dist=0.5, target_vel=0.06)
         self.go_pushset_front()
-        self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.1, target_vel=0.03)
+        # start_pose = self.get_current_ee_pose_via_fk()
+        # print("start_pose:", start_pose)
+        self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.3875, target_vel=2.25)
         rospy.loginfo("PHASE 3: Pushing cube with velocity control")
         # direction_xy=[0.0, 1.0] moves the robot forward along the Y (Green) axis
         
         rospy.sleep(0.1)
 
         # Identifies the window around peak impact
-        start_t, _ = self.get_start_end_t(t_before=-15, t_after=35)
+        start_t, _ = self.get_start_end_t(t_before=self.t_before, t_after=self.t_after)
         # Trigger the visualization
         rospy.loginfo("Visualizing Captured Histories...")
-        self.visualize_push_history(start_t, window_len=50)
+        self.visualize_push_history(start_t, window_len=self.t_after-self.t_before)
 
         rospy.loginfo("PHASE 4: Moving to start position")
         self.go_sp()
@@ -328,137 +337,201 @@ class PushCube():
         rospy.loginfo(f"[VEL PUSH] Finished. Total Traveled: {traveled:.4f}")
 
 
-    def execute_velocity_push_front(self, direction_xy, push_dist, target_vel):
-        """
-        Updated Jacobian Push using Direct Cartesian Twist Commands.
-        Ensures responsive movement on hardware by bypassing joint trajectory buffers.
-        """
-        # Ensure the arm group is not holding a previous MoveIt goal
-        self.arm_group.stop()
+    # def execute_velocity_push_front(self, direction_xy, push_dist, target_vel):
+    #     """
+    #     Updated Jacobian Push using Direct Cartesian Twist Commands.
+    #     Ensures responsive movement on hardware by bypassing joint trajectory buffers.
+    #     """
+    #     # Ensure the arm group is not holding a previous MoveIt goal
+    #     self.arm_group.stop()
         
-        # dt = 0.02 # 50 Hz control loop
-        dt = 0.01 # 100 Hz control loop
+    #     # dt = 0.02 # 50 Hz control loop
+    #     dt = 0.01 # 100 Hz control loop
+    #     rate = rospy.Rate(1/dt)
+    #     traveled = 0.0
+        
+    #     # 1. Initial State Capture via FK Service
+    #     start_pose = self.get_current_ee_pose_via_fk()
+    #     if not start_pose: 
+    #         rospy.logerr("[VEL PUSH] Could not get initial FK pose. Aborting.")
+    #         return
+        
+    #     # Target orientation and height to maintain
+    #     target_quat = [start_pose.orientation.x, start_pose.orientation.y, 
+    #                    start_pose.orientation.z, start_pose.orientation.w]
+    #     target_z = start_pose.position.z
+        
+    #     start_x = start_pose.position.x
+
+    #     self._prev_joint_pos_for_accel = np.array(self.current_joint_positions)
+    #     self._prev_ee_vel_w = np.zeros(6)
+
+    #     rospy.loginfo(f"[VEL PUSH] Starting. Direction: {direction_xy} | Target Z: {target_z:.4f}")
+        
+    #     # Updated to match the provided gen3_lite_urdf exactly
+    #     joint_limits = [
+    #         (-2.69, 2.69), # Joint 1
+    #         (-2.69, 2.69), # Joint 2
+    #         (-2.69, 2.69), # Joint 3
+    #         (-2.59, 2.59), # Joint 4
+    #         (-2.57, 2.57), # Joint 5
+    #         (-2.59, 2.59)  # Joint 6
+    #     ]
+    #     step_count = 0
+    #     while traveled < push_dist and not rospy.is_shutdown():
+    #         curr_pose = self.get_current_ee_pose_via_fk()
+    #         if not curr_pose: continue
+            
+
+    #         # --- 1. Linear Velocity Setup ---
+    #         # XY: Use the provided direction (e.g., [0, 1] for Y-axis forward)
+    #         v_xy = np.array(direction_xy) * target_vel
+            
+    #         # Z: Proportional station-keeping to prevent digging/drifting
+    #         z_error = target_z - curr_pose.position.z
+    #         v_z_corr = z_error * 4.0  # Gain tuned for hardware stability
+            
+    #         # --- 2. Orientation Control (Angular Velocity) ---
+    #         curr_q = [curr_pose.orientation.x, curr_pose.orientation.y, 
+    #                   curr_pose.orientation.z, curr_pose.orientation.w]
+            
+    #         # Quaternion error to maintain fixed orientation
+    #         q_err = tf_trans.quaternion_multiply(target_quat, tf_trans.quaternion_conjugate(curr_q))
+    #         if q_err[3] < 0: q_err = -q_err  # Shortest path check
+            
+    #         # Angular velocity command (Roll, Pitch, Yaw speeds)
+    #         v_angular = q_err[:3] * 2.0  # Lower gain for smoother hardware rotation
+
+    #         # --- 3. Construct and Publish Twist Command ---
+    #         cmd = TwistCommand()
+    #         cmd.reference_frame = 1  # Set to Task Frame (Base)
+            
+    #         cmd.twist.linear_x = v_xy[0]
+    #         cmd.twist.linear_y = v_xy[1]
+    #         cmd.twist.linear_z = np.clip(v_z_corr, -0.05, 0.05)
+            
+    #         cmd.twist.angular_x = v_angular[0]
+    #         cmd.twist.angular_y = v_angular[1]
+    #         cmd.twist.angular_z = v_angular[2]
+            
+    #         # Update history buffers exactly like Isaac Lab logic
+    #         q_curr = np.array(self.current_joint_positions)
+    #         self.update_history(curr_pose, q_curr, target_quat, dt)
+
+    #         current_twist_linear = self._ee_vel_a_his[-1, :3]
+
+    #         # --- DEBUG PRINT (Every 10 steps) ---
+    #         if step_count % 10 == 0:
+    #             print(f"\n--- TWIST STEP {step_count} ---")
+    #             print(f"Traveled: {traveled:.4f} / {push_dist}")
+    #             print(f"Current Pos: [{curr_pose.position.x:.4f}, {curr_pose.position.y:.4f}, {curr_pose.position.z:.4f}]")
+    #             print(f"Commanded Twist: Linear[{cmd.twist.linear_x:.3f}, {cmd.twist.linear_y:.3f}, {cmd.twist.linear_z:.3f}]")
+    #             print(f"Current Twist:   Linear[{current_twist_linear[0]:.3f}, {current_twist_linear[1]:.3f}, {current_twist_linear[2]:.3f}]")
+
+    #             # Check for joint limits
+    #             for idx, pos in enumerate(self.current_joint_positions):
+    #                 low, high = joint_limits[idx]
+    #                 if pos < low + 0.1 or pos > high - 0.1:
+    #                     rospy.logwarn(f"!!! ALERT: Joint_{idx+1} near limit: {np.degrees(pos):.2f} deg")
+                        
+    #             # --- DISTANCE TO LIMIT CALCULATION ---
+    #             for i, pos in enumerate(self.current_joint_positions):
+    #                 low, high = joint_limits[i]
+    #                 dist_to_low = abs(pos - low)
+    #                 dist_to_high = abs(pos - high)
+    #                 min_dist = min(dist_to_low, dist_to_high)
+                    
+    #                 if min_dist < 0.05: # Warn if within 3 degrees
+    #                     side = "LOWER" if dist_to_low < dist_to_high else "UPPER"
+    #                     rospy.logwarn(f"!!! Joint_{i+1} NEAR {side} LIMIT: {min_dist:.3f} rad left")
+
+    #         self.twist_pub.publish(cmd)
+            
+    #         traveled += target_vel * dt
+    #         # Inside execute_velocity_push_front initialization
+    #         # traveled = abs(curr_pose.position.x - start_x)
+
+    #         step_count += 1
+    #         rate.sleep()
+
+    #     # 4. Mandatory Safety Stop: Publish zero velocity to halt the robot
+    #     self.twist_pub.publish(TwistCommand())
+    #     rospy.loginfo(f"[VEL PUSH] Finished. Total Traveled: {traveled:.4f}")
+
+    def execute_velocity_push_front(self, direction_xy, push_dist, target_vel):
+        self.arm_group.stop()
+        dt = 0.01 
         rate = rospy.Rate(1/dt)
         traveled = 0.0
         
-        # 1. Initial State Capture via FK Service
         start_pose = self.get_current_ee_pose_via_fk()
-        if not start_pose: 
-            rospy.logerr("[VEL PUSH] Could not get initial FK pose. Aborting.")
-            return
+        if not start_pose: return
         
-        # Target orientation and height to maintain
+        # 1. APPLY VELOCITY SCALING
+        # Since actual (0.073) / commanded (0.03) ≈ 2.4, we scale the target down
+        # v_scale = 0.4  # Scaling factor to hit the 0.03 m/s actual target
+        v_scale = 1.0
+        scaled_vel = target_vel * v_scale
+
         target_quat = [start_pose.orientation.x, start_pose.orientation.y, 
                        start_pose.orientation.z, start_pose.orientation.w]
         target_z = start_pose.position.z
-        
         start_x = start_pose.position.x
 
         self._prev_joint_pos_for_accel = np.array(self.current_joint_positions)
         self._prev_ee_vel_w = np.zeros(6)
 
-        rospy.loginfo(f"[VEL PUSH] Starting. Direction: {direction_xy} | Target Z: {target_z:.4f}")
-        
-        # Updated to match the provided gen3_lite_urdf exactly
-        joint_limits = [
-            (-2.69, 2.69), # Joint 1
-            (-2.69, 2.69), # Joint 2
-            (-2.69, 2.69), # Joint 3
-            (-2.59, 2.59), # Joint 4
-            (-2.57, 2.57), # Joint 5
-            (-2.59, 2.59)  # Joint 6
-        ]
         step_count = 0
-        while traveled < push_dist and not rospy.is_shutdown():
+        # while traveled < push_dist and not rospy.is_shutdown():
+        while step_count < self.history_len and not rospy.is_shutdown():
             curr_pose = self.get_current_ee_pose_via_fk()
             if not curr_pose: continue
-            
 
-            # --- 1. Linear Velocity Setup ---
-            # XY: Use the provided direction (e.g., [0, 1] for Y-axis forward)
-            v_xy = np.array(direction_xy) * target_vel
+            traveled = abs(curr_pose.position.x - start_x)
+
+            # --- 2. SMOOTHED VELOCITY COMMANDS ---
+            v_xy = np.array(direction_xy) * scaled_vel
             
-            # Z: Proportional station-keeping to prevent digging/drifting
+            # Reduce Z-gain from 4.0 to 2.0 to stop the 0.10 m/s Z-spikes
             z_error = target_z - curr_pose.position.z
-            v_z_corr = z_error * 4.0  # Gain tuned for hardware stability
+            v_z_corr = z_error * 2.0 
             
-            # --- 2. Orientation Control (Angular Velocity) ---
-            curr_q = [curr_pose.orientation.x, curr_pose.orientation.y, 
-                      curr_pose.orientation.z, curr_pose.orientation.w]
-            
-            # Quaternion error to maintain fixed orientation
-            q_err = tf_trans.quaternion_multiply(target_quat, tf_trans.quaternion_conjugate(curr_q))
-            if q_err[3] < 0: q_err = -q_err  # Shortest path check
-            
-            # Angular velocity command (Roll, Pitch, Yaw speeds)
-            v_angular = q_err[:3] * 2.0  # Lower gain for smoother hardware rotation
-
-            # --- 3. Construct and Publish Twist Command ---
             cmd = TwistCommand()
-            cmd.reference_frame = 1  # Set to Task Frame (Base)
-            
+            cmd.reference_frame = 1 
             cmd.twist.linear_x = v_xy[0]
             cmd.twist.linear_y = v_xy[1]
-            cmd.twist.linear_z = np.clip(v_z_corr, -0.05, 0.05)
+            cmd.twist.linear_z = np.clip(v_z_corr, -0.03, 0.03) # Tighter clip for stability
             
-            cmd.twist.angular_x = v_angular[0]
-            cmd.twist.angular_y = v_angular[1]
-            cmd.twist.angular_z = v_angular[2]
-            
-            # Update history buffers exactly like Isaac Lab logic
-            q_curr = np.array(self.current_joint_positions)
-            self.update_history(curr_pose, q_curr, target_quat, dt)
+            # --- 3. ORIENTATION LOGIC ---
+            curr_q = [curr_pose.orientation.x, curr_pose.orientation.y, 
+                      curr_pose.orientation.z, curr_pose.orientation.w]
+            q_err = tf_trans.quaternion_multiply(target_quat, tf_trans.quaternion_conjugate(curr_q))
+            if q_err[3] < 0: q_err = -q_err 
+            v_angular = q_err[:3] * 1.5 # Lowered angular gain for smoother travel
 
-            current_twist_linear = self._ee_vel_a_his[-1, :3]
-
-            # --- DEBUG PRINT (Every 10 steps) ---
-            if step_count % 10 == 0:
-                print(f"\n--- TWIST STEP {step_count} ---")
-                print(f"Traveled: {traveled:.4f} / {push_dist}")
-                print(f"Current Pos: [{curr_pose.position.x:.4f}, {curr_pose.position.y:.4f}, {curr_pose.position.z:.4f}]")
-                print(f"Commanded Twist: Linear[{cmd.twist.linear_x:.3f}, {cmd.twist.linear_y:.3f}, {cmd.twist.linear_z:.3f}]")
-                print(f"Current Twist:   Linear[{current_twist_linear[0]:.3f}, {current_twist_linear[1]:.3f}, {current_twist_linear[2]:.3f}]")
-
-                # Check for joint limits
-                for idx, pos in enumerate(self.current_joint_positions):
-                    low, high = joint_limits[idx]
-                    if pos < low + 0.1 or pos > high - 0.1:
-                        rospy.logwarn(f"!!! ALERT: Joint_{idx+1} near limit: {np.degrees(pos):.2f} deg")
-                        
-                # --- DISTANCE TO LIMIT CALCULATION ---
-                for i, pos in enumerate(self.current_joint_positions):
-                    low, high = joint_limits[i]
-                    dist_to_low = abs(pos - low)
-                    dist_to_high = abs(pos - high)
-                    min_dist = min(dist_to_low, dist_to_high)
-                    
-                    if min_dist < 0.05: # Warn if within 3 degrees
-                        side = "LOWER" if dist_to_low < dist_to_high else "UPPER"
-                        rospy.logwarn(f"!!! Joint_{i+1} NEAR {side} LIMIT: {min_dist:.3f} rad left")
-
+            self.update_history(curr_pose, np.array(self.current_joint_positions), target_quat, dt)
             self.twist_pub.publish(cmd)
-            
-            traveled += target_vel * dt
-            # Inside execute_velocity_push_front initialization
-            # traveled = abs(curr_pose.position.x - start_x)
-
             step_count += 1
             rate.sleep()
 
-        # 4. Mandatory Safety Stop: Publish zero velocity to halt the robot
         self.twist_pub.publish(TwistCommand())
-        rospy.loginfo(f"[VEL PUSH] Finished. Total Traveled: {traveled:.4f}")
-
 
     def update_history(self, curr_pose, q_curr, target_quat_w, dt):
         # 1. Get current spatial velocity in WORLD frame
         # For Gen3 Lite, we get this from the Jacobian: V = J * q_dot
         # Note: Since you are in a velocity loop, you can use the q_dot you just calculated
         J = self.j_solver.get_jacobian(q_curr)
+        # print("Jacobian:\n", J)
         q_dot_actual = (np.array(self.current_joint_positions) - self._prev_joint_pos_for_accel) / dt
         self._prev_joint_pos_for_accel = np.array(self.current_joint_positions)
         
-        V_w = J @ q_dot_actual # 6D Twist in world frame [v_x, v_y, v_z, w_x, w_y, w_z]
+        raw_V_w = J @ q_dot_actual # 6D Twist in world frame [v_x, v_y, v_z, w_x, w_y, w_z]
+        
+        # --- MOVING AVERAGE FILTER ---
+        self._vel_buffer.append(raw_V_w)
+        if len(self._vel_buffer) > self.smoothing_window:
+            self._vel_buffer.pop(0)
+        V_w = np.mean(self._vel_buffer, axis=0)
         
         # 2. Calculate Spatial Acceleration in WORLD frame (Finite Difference)
         V_dot_w = (V_w - self._prev_ee_vel_w) / dt
@@ -482,11 +555,12 @@ class PushCube():
             v_quat = list(v) + [0.0]
             return tf_trans.quaternion_multiply(tf_trans.quaternion_multiply(q, v_quat), tf_trans.quaternion_conjugate(q))[:3]
 
-        V_a = np.concatenate([rotate_vec(inv_q_a_w, v_w_lin), rotate_vec(inv_q_a_w, v_w_ang)])
-        V_dot_a = np.concatenate([rotate_vec(inv_q_a_w, a_w_lin), rotate_vec(inv_q_a_w, a_w_ang)])
-        # V_a = np.concatenate([v_w_lin, v_w_ang]) # Angular velocity is already in the correct frame since it's a pure rotation
-        # V_dot_a = np.concatenate([a_w_lin, a_w_ang]) # Angular acceleration is also in the correct frame
+        # V_a = np.concatenate([rotate_vec(inv_q_a_w, v_w_lin), rotate_vec(inv_q_a_w, v_w_ang)])
+        # V_dot_a = np.concatenate([rotate_vec(inv_q_a_w, a_w_lin), rotate_vec(inv_q_a_w, a_w_ang)])
+        V_a = np.concatenate([v_w_lin, v_w_ang]) # Angular velocity is already in the correct frame since it's a pure rotation
+        V_dot_a = np.concatenate([a_w_lin, a_w_ang]) # Angular acceleration is also in the correct frame
 
+        
         # 4. Update Rolling History Buffers
         # Mirroring Isaac Lab: self._ee_vel_a_his = roll(..., shifts=-6, dims=1)
         self._ee_vel_a_his = np.roll(self._ee_vel_a_his, -1, axis=0)
@@ -614,11 +688,37 @@ class PushCube():
         self.arm_group.go(wait=True)
         self.gripper_move(0.0)
         
+    # def go_pushset_front(self):
+    #     self.arm_group.set_joint_value_target([0.08763371251403841, -1.6131650892091853, 
+    #                                            1.8311453570643887, 1.6748508242742544, 
+    #                                            -1.944802680802355, 1.5674109164171879])
+    #     self.arm_group.go(wait=True)
+    #     self.gripper_move(0.0)
+    
     def go_pushset_front(self):
-        self.arm_group.set_joint_value_target([0.08763371251403841, -1.6131650892091853, 
-                                               1.8311453570643887, 1.6748508242742544, 
-                                               -1.944802680802355, 1.5674109164171879])
-        self.arm_group.go(wait=True)
+        target_pose = Pose()
+        target_pose.position.x = 0.4416
+        target_pose.position.y = 0.0630
+        target_pose.position.z = 0.0119
+        
+        # 2. Set orientation: Euler (0, 90deg, 0) or (0, 1.57, 0)
+        q = tf_trans.quaternion_from_euler(0, 1.5708, 0)
+        target_pose.orientation.x = q[0]
+        target_pose.orientation.y = q[1]
+        target_pose.orientation.z = q[2]
+        target_pose.orientation.w = q[3]
+        
+
+        # 3. Use MoveIt to find the IK solution and move
+        self.arm_group.set_pose_target(target_pose)
+        plan = self.arm_group.go(wait=True)
+        self.arm_group.stop()
+        self.arm_group.clear_pose_targets()
+        
+        # 4. Print the resulting joints so you can hardcode them later
+        current_joints = self.arm_group.get_current_joint_values()
+        # rospy.loginfo(f"Optimized Parallel Joints: {current_joints}")
+        
         self.gripper_move(0.0)
 
     def gripper_move(self, width):

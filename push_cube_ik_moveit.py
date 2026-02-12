@@ -10,6 +10,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from moveit_msgs.srv import GetPositionFK, GetPositionFKRequest
 from kortex_driver.msg import TwistCommand, Twist
 import matplotlib.pyplot as plt
+import os
 
 try:
     import PyKDL as kdl
@@ -90,7 +91,6 @@ class PushCube():
         q_curr = np.array(self.current_joint_positions)
         J = self.j_solver.get_jacobian(q_curr)
         # print("Current Jacobian:\n", J)
-        
         
     
     def get_current_ee_pose_via_fk(self):
@@ -188,7 +188,7 @@ class PushCube():
         self.go_pushset_left()
         rospy.loginfo("PHASE 3: Pushing cube with velocity control")
         # direction_xy=[0.0, 1.0] moves the robot forward along the Y (Green) axis
-        self.execute_velocity_push(direction_xy=[0.0, -1.0], push_dist=0.1, target_vel=0.03)
+        self.execute_velocity_push(direction_xy=[0.0, -1.0], push_dist=0.06, target_vel=0.03)
         rospy.sleep(0.1)
 
         # Identifies the window around peak impact
@@ -209,8 +209,9 @@ class PushCube():
         # Ensure the arm group is not holding a previous MoveIt goal
         self.arm_group.stop()
         
-        rate = rospy.Rate(50)  # 50 Hz control loop
-        dt = 0.02
+        # dt = 0.02 # 50 Hz control loop
+        dt = 0.01 # 100 Hz control loop
+        rate = rospy.Rate(1/dt)
         traveled = 0.0
         
         # 1. Initial State Capture via FK Service
@@ -223,16 +224,28 @@ class PushCube():
         target_quat = [start_pose.orientation.x, start_pose.orientation.y, 
                        start_pose.orientation.z, start_pose.orientation.w]
         target_z = start_pose.position.z
+        
+        start_y = start_pose.position.y
 
         self._prev_joint_pos_for_accel = np.array(self.current_joint_positions)
         self._prev_ee_vel_w = np.zeros(6)
 
         rospy.loginfo(f"[VEL PUSH] Starting. Direction: {direction_xy} | Target Z: {target_z:.4f}")
-
+        
+        # Updated to match the provided gen3_lite_urdf exactly
+        joint_limits = [
+            (-2.69, 2.69), # Joint 1
+            (-2.69, 2.69), # Joint 2
+            (-2.69, 2.69), # Joint 3
+            (-2.59, 2.59), # Joint 4
+            (-2.57, 2.57), # Joint 5
+            (-2.59, 2.59)  # Joint 6
+        ]
         step_count = 0
         while traveled < push_dist and not rospy.is_shutdown():
             curr_pose = self.get_current_ee_pose_via_fk()
             if not curr_pose: continue
+            
 
             # --- 1. Linear Velocity Setup ---
             # XY: Use the provided direction (e.g., [0, 1] for Y-axis forward)
@@ -269,16 +282,39 @@ class PushCube():
             q_curr = np.array(self.current_joint_positions)
             self.update_history(curr_pose, q_curr, target_quat, dt)
 
+            current_twist_linear = self._ee_vel_a_his[-1, :3]
+
             # --- DEBUG PRINT (Every 10 steps) ---
             if step_count % 10 == 0:
                 print(f"\n--- TWIST STEP {step_count} ---")
                 print(f"Traveled: {traveled:.4f} / {push_dist}")
                 print(f"Current Pos: [{curr_pose.position.x:.4f}, {curr_pose.position.y:.4f}, {curr_pose.position.z:.4f}]")
                 print(f"Commanded Twist: Linear[{cmd.twist.linear_x:.3f}, {cmd.twist.linear_y:.3f}, {cmd.twist.linear_z:.3f}]")
+                print(f"Current Twist:   Linear[{current_twist_linear[0]:.3f}, {current_twist_linear[1]:.3f}, {current_twist_linear[2]:.3f}]")
+
+                # Check for joint limits
+                for idx, pos in enumerate(self.current_joint_positions):
+                    low, high = joint_limits[idx]
+                    if pos < low + 0.1 or pos > high - 0.1:
+                        rospy.logwarn(f"!!! ALERT: Joint_{idx+1} near limit: {np.degrees(pos):.2f} deg")
+                        
+                # --- DISTANCE TO LIMIT CALCULATION ---
+                for i, pos in enumerate(self.current_joint_positions):
+                    low, high = joint_limits[i]
+                    dist_to_low = abs(pos - low)
+                    dist_to_high = abs(pos - high)
+                    min_dist = min(dist_to_low, dist_to_high)
+                    
+                    if min_dist < 0.05: # Warn if within 3 degrees
+                        side = "LOWER" if dist_to_low < dist_to_high else "UPPER"
+                        rospy.logwarn(f"!!! Joint_{i+1} NEAR {side} LIMIT: {min_dist:.3f} rad left")
 
             self.twist_pub.publish(cmd)
             
             traveled += target_vel * dt
+            # Inside execute_velocity_push initialization
+            # traveled = abs(curr_pose.position.y - start_y)
+        
             step_count += 1
             rate.sleep()
 
@@ -320,6 +356,8 @@ class PushCube():
 
         V_a = np.concatenate([rotate_vec(inv_q_a_w, v_w_lin), rotate_vec(inv_q_a_w, v_w_ang)])
         V_dot_a = np.concatenate([rotate_vec(inv_q_a_w, a_w_lin), rotate_vec(inv_q_a_w, a_w_ang)])
+        # V_a = np.concatenate([v_w_lin, v_w_ang]) # Angular velocity is already in the correct frame since it's a pure rotation
+        # V_dot_a = np.concatenate([a_w_lin, a_w_ang]) # Angular acceleration is also in the correct frame
 
         # 4. Update Rolling History Buffers
         # Mirroring Isaac Lab: self._ee_vel_a_his = roll(..., shifts=-6, dims=1)
@@ -355,15 +393,23 @@ class PushCube():
         
         return int(start_t), int(end_t)
 
+
     def visualize_push_history(self, start_t, window_len=50):
         """
-        Visualizes all 6 axes of the End Effector Velocity and Acceleration.
-        Linear: X (0), Y (1), Z (2) | Angular: Wx (3), Wy (4), Wz (5)
+        Visualizes all 6 axes of the End Effector Velocity and Acceleration in the Local Tool Frame.
+        Saves the output as PNG files in the /vis folder.
         """
+        # 1. Create the /vis directory if it doesn't exist
+        vis_dir = os.path.join(os.getcwd(), "vis")
+        if not os.path.exists(vis_dir):
+            os.makedirs(vis_dir)
+            rospy.loginfo(f"Created visualization directory at: {vis_dir}")
+
         # --- CONFIGURATION ---
         end_t = min(start_t + window_len, self.history_len)
         time_indices = np.arange(start_t, end_t)
-        labels = ['Linear X', 'Linear Y', 'Linear Z', 'Angular X', 'Angular Y', 'Angular Z']
+        # Using 'Local' labels because of the inv_q_a_w transformation
+        labels = ['Local Tool X', 'Local Tool Y', 'Local Tool Z', 'Local Tool Wx', 'Local Tool Wy', 'Local Tool Wz']
         units = ['m/s', 'm/s', 'm/s', 'rad/s', 'rad/s', 'rad/s']
         acc_units = ['m/s^2', 'm/s^2', 'm/s^2', 'rad/s^2', 'rad/s^2', 'rad/s^2']
 
@@ -397,8 +443,21 @@ class PushCube():
         
         fig_vel.tight_layout()
         fig_acc.tight_layout()
-        plt.show()
 
+        # 2. Save the figures
+        timestamp = rospy.get_time()
+        vel_path = os.path.join(vis_dir, f"velocity_history_{timestamp}.png")
+        acc_path = os.path.join(vis_dir, f"acceleration_history_{timestamp}.png")
+        
+        fig_vel.savefig(vel_path)
+        fig_acc.savefig(acc_path)
+        
+        rospy.loginfo(f"Saved visualization to {vis_dir}")
+        
+        # Optional: Still show them if you want
+        # plt.show()
+        
+        
     ####### fixed position control #######
 
     def go_sp(self):

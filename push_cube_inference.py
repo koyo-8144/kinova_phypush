@@ -96,7 +96,7 @@ class JacobianSolver:
         success, self.tree = treeFromParam(robot_description)
         if not success:
             raise RuntimeError("Failed to extract KDL tree from URDF")
-        self.chain = self.tree.getChain("base_link", "end_effector_link")
+        self.chain = self.tree.getChain("base_link", "tool_frame")
         self.jac_solver = kdl.ChainJntToJacSolver(self.chain)
         self.num_joints = self.chain.getNrOfJoints()
 
@@ -147,7 +147,7 @@ class PushCube():
         self._ee_vel_a_his = np.zeros((self.history_len, 6))
         self._ee_accel_a_his = np.zeros((self.history_len, 6))
         self._prev_ee_vel_w = np.zeros(6)
-        self.smoothing_window = 10
+        self.smoothing_window = 5
         self._vel_buffer = []
 
         self.t_before = 15
@@ -226,7 +226,7 @@ class PushCube():
         vel_tensor = torch.from_numpy(vel_window).float().to(self.device)
         acc_tensor = torch.from_numpy(acc_window).float().to(self.device)
 
-        rospy.loginfo("--- 🚀 Executing Neural Inference ---")
+        rospy.loginfo("--- Executing Inference ---")
         with torch.no_grad():
             output = self.model(acc_tensor, vel_tensor)
         
@@ -356,7 +356,7 @@ class PushCube():
         target_pose = Pose()
         target_pose.position.x = 0.4416
         target_pose.position.y = 0.0630
-        target_pose.position.z = 0.0119
+        target_pose.position.z= 0.0
         q = tf_trans.quaternion_from_euler(0, 1.5708, 0)
         target_pose.orientation.x, target_pose.orientation.y, target_pose.orientation.z, target_pose.orientation.w = q
         self.arm_group.set_pose_target(target_pose)

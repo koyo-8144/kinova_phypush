@@ -192,27 +192,29 @@ class PushCube():
         rospy.loginfo("PHASE 1: Moving to start position")
         self.go_sp()
         rospy.loginfo("PHASE 2: Moving to pushset position")
+        
         # self.go_pushset_left()
         # self.execute_velocity_push_lr(direction_xy=[0.0, -1.0], push_dist=0.5, target_vel=0.06)
         # self.go_pushset_right()
         # self.execute_velocity_push_lr(direction_xy=[0.0, 1.0], push_dist=0.5, target_vel=0.06)
         self.go_pushset_front()
         # start_pose = self.get_current_ee_pose_via_fk()
-        # print("start_pose:", start_pose)
-        self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.3875, target_vel=2.25)
-        rospy.loginfo("PHASE 3: Pushing cube with velocity control")
-        # direction_xy=[0.0, 1.0] moves the robot forward along the Y (Green) axis
         
-        rospy.sleep(0.1)
+        # # print("start_pose:", start_pose)
+        # self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.3875, target_vel=2.25)
+        # rospy.loginfo("PHASE 3: Pushing cube with velocity control")
+        # # direction_xy=[0.0, 1.0] moves the robot forward along the Y (Green) axis
+        
+        # rospy.sleep(0.1)
 
-        # Identifies the window around peak impact
-        start_t, _ = self.get_start_end_t(t_before=self.t_before, t_after=self.t_after)
-        # Trigger the visualization
-        rospy.loginfo("Visualizing Captured Histories...")
-        self.visualize_push_history(start_t, window_len=self.t_after-self.t_before)
+        # # Identifies the window around peak impact
+        # start_t, _ = self.get_start_end_t(t_before=self.t_before, t_after=self.t_after)
+        # # Trigger the visualization
+        # rospy.loginfo("Visualizing Captured Histories...")
+        # self.visualize_push_history(start_t, window_len=self.t_after-self.t_before)
 
-        rospy.loginfo("PHASE 4: Moving to start position")
-        self.go_sp()
+        # rospy.loginfo("PHASE 4: Moving to start position")
+        # self.go_sp()
         
         
     def execute_velocity_push_lr(self, direction_xy, push_dist, target_vel):
@@ -699,7 +701,7 @@ class PushCube():
         target_pose = Pose()
         target_pose.position.x = 0.4416
         target_pose.position.y = 0.0630
-        target_pose.position.z = 0.0119
+        target_pose.position.z = 0.0 # 0.0119
         
         # 2. Set orientation: Euler (0, 90deg, 0) or (0, 1.57, 0)
         q = tf_trans.quaternion_from_euler(0, 1.5708, 0)

@@ -11,6 +11,7 @@ from moveit_msgs.srv import GetPositionFK, GetPositionFKRequest
 from kortex_driver.msg import TwistCommand, Twist
 import matplotlib.pyplot as plt
 import os
+import csv
 
 try:
     import PyKDL as kdl
@@ -81,7 +82,7 @@ class PushCube():
         self.t_after = 35
         
         # Initialize a buffer for the moving average (e.g., window size of 5)
-        self.smoothing_window = 10
+        self.smoothing_window = 1
         self._vel_buffer = []
 
     def state_callback(self, msg):
@@ -340,126 +341,6 @@ class PushCube():
         rospy.loginfo(f"[VEL PUSH] Finished. Total Traveled: {traveled:.4f}")
 
 
-    # def execute_velocity_push_front(self, direction_xy, push_dist, target_vel):
-    #     """
-    #     Updated Jacobian Push using Direct Cartesian Twist Commands.
-    #     Ensures responsive movement on hardware by bypassing joint trajectory buffers.
-    #     """
-    #     # Ensure the arm group is not holding a previous MoveIt goal
-    #     self.arm_group.stop()
-        
-    #     # dt = 0.02 # 50 Hz control loop
-    #     dt = 0.01 # 100 Hz control loop
-    #     rate = rospy.Rate(1/dt)
-    #     traveled = 0.0
-        
-    #     # 1. Initial State Capture via FK Service
-    #     start_pose = self.get_current_ee_pose_via_fk()
-    #     if not start_pose: 
-    #         rospy.logerr("[VEL PUSH] Could not get initial FK pose. Aborting.")
-    #         return
-        
-    #     # Target orientation and height to maintain
-    #     target_quat = [start_pose.orientation.x, start_pose.orientation.y, 
-    #                    start_pose.orientation.z, start_pose.orientation.w]
-    #     target_z = start_pose.position.z
-        
-    #     start_x = start_pose.position.x
-
-    #     self._prev_joint_pos_for_accel = np.array(self.current_joint_positions)
-    #     self._prev_ee_vel_w = np.zeros(6)
-
-    #     rospy.loginfo(f"[VEL PUSH] Starting. Direction: {direction_xy} | Target Z: {target_z:.4f}")
-        
-    #     # Updated to match the provided gen3_lite_urdf exactly
-    #     joint_limits = [
-    #         (-2.69, 2.69), # Joint 1
-    #         (-2.69, 2.69), # Joint 2
-    #         (-2.69, 2.69), # Joint 3
-    #         (-2.59, 2.59), # Joint 4
-    #         (-2.57, 2.57), # Joint 5
-    #         (-2.59, 2.59)  # Joint 6
-    #     ]
-    #     step_count = 0
-    #     while traveled < push_dist and not rospy.is_shutdown():
-    #         curr_pose = self.get_current_ee_pose_via_fk()
-    #         if not curr_pose: continue
-            
-
-    #         # --- 1. Linear Velocity Setup ---
-    #         # XY: Use the provided direction (e.g., [0, 1] for Y-axis forward)
-    #         v_xy = np.array(direction_xy) * target_vel
-            
-    #         # Z: Proportional station-keeping to prevent digging/drifting
-    #         z_error = target_z - curr_pose.position.z
-    #         v_z_corr = z_error * 4.0  # Gain tuned for hardware stability
-            
-    #         # --- 2. Orientation Control (Angular Velocity) ---
-    #         curr_q = [curr_pose.orientation.x, curr_pose.orientation.y, 
-    #                   curr_pose.orientation.z, curr_pose.orientation.w]
-            
-    #         # Quaternion error to maintain fixed orientation
-    #         q_err = tf_trans.quaternion_multiply(target_quat, tf_trans.quaternion_conjugate(curr_q))
-    #         if q_err[3] < 0: q_err = -q_err  # Shortest path check
-            
-    #         # Angular velocity command (Roll, Pitch, Yaw speeds)
-    #         v_angular = q_err[:3] * 2.0  # Lower gain for smoother hardware rotation
-
-    #         # --- 3. Construct and Publish Twist Command ---
-    #         cmd = TwistCommand()
-    #         cmd.reference_frame = 1  # Set to Task Frame (Base)
-            
-    #         cmd.twist.linear_x = v_xy[0]
-    #         cmd.twist.linear_y = v_xy[1]
-    #         cmd.twist.linear_z = np.clip(v_z_corr, -0.05, 0.05)
-            
-    #         cmd.twist.angular_x = v_angular[0]
-    #         cmd.twist.angular_y = v_angular[1]
-    #         cmd.twist.angular_z = v_angular[2]
-            
-    #         # Update history buffers exactly like Isaac Lab logic
-    #         q_curr = np.array(self.current_joint_positions)
-    #         self.update_history(curr_pose, q_curr, target_quat, dt)
-
-    #         current_twist_linear = self._ee_vel_a_his[-1, :3]
-
-    #         # --- DEBUG PRINT (Every 10 steps) ---
-    #         if step_count % 10 == 0:
-    #             print(f"\n--- TWIST STEP {step_count} ---")
-    #             print(f"Traveled: {traveled:.4f} / {push_dist}")
-    #             print(f"Current Pos: [{curr_pose.position.x:.4f}, {curr_pose.position.y:.4f}, {curr_pose.position.z:.4f}]")
-    #             print(f"Commanded Twist: Linear[{cmd.twist.linear_x:.3f}, {cmd.twist.linear_y:.3f}, {cmd.twist.linear_z:.3f}]")
-    #             print(f"Current Twist:   Linear[{current_twist_linear[0]:.3f}, {current_twist_linear[1]:.3f}, {current_twist_linear[2]:.3f}]")
-
-    #             # Check for joint limits
-    #             for idx, pos in enumerate(self.current_joint_positions):
-    #                 low, high = joint_limits[idx]
-    #                 if pos < low + 0.1 or pos > high - 0.1:
-    #                     rospy.logwarn(f"!!! ALERT: Joint_{idx+1} near limit: {np.degrees(pos):.2f} deg")
-                        
-    #             # --- DISTANCE TO LIMIT CALCULATION ---
-    #             for i, pos in enumerate(self.current_joint_positions):
-    #                 low, high = joint_limits[i]
-    #                 dist_to_low = abs(pos - low)
-    #                 dist_to_high = abs(pos - high)
-    #                 min_dist = min(dist_to_low, dist_to_high)
-                    
-    #                 if min_dist < 0.05: # Warn if within 3 degrees
-    #                     side = "LOWER" if dist_to_low < dist_to_high else "UPPER"
-    #                     rospy.logwarn(f"!!! Joint_{i+1} NEAR {side} LIMIT: {min_dist:.3f} rad left")
-
-    #         self.twist_pub.publish(cmd)
-            
-    #         traveled += target_vel * dt
-    #         # Inside execute_velocity_push_front initialization
-    #         # traveled = abs(curr_pose.position.x - start_x)
-
-    #         step_count += 1
-    #         rate.sleep()
-
-    #     # 4. Mandatory Safety Stop: Publish zero velocity to halt the robot
-    #     self.twist_pub.publish(TwistCommand())
-    #     rospy.loginfo(f"[VEL PUSH] Finished. Total Traveled: {traveled:.4f}")
 
     def execute_velocity_push_front(self, direction_xy, push_dist, target_vel):
         self.arm_group.stop()
@@ -601,65 +482,56 @@ class PushCube():
 
     def visualize_push_history(self, start_t, window_len=50):
         """
-        Visualizes only the X-axis (Axis 0) of the End Effector Velocity and 
-        Acceleration in the Local Tool Frame.
+        Visualizes only the X-axis of EE Velocity/Acceleration and saves data to CSV.
         """
-        # 1. Create the /vis directory if it doesn't exist
+        # 1. Create directories
         vis_dir = os.path.join(os.getcwd(), "vis")
-        if not os.path.exists(vis_dir):
-            os.makedirs(vis_dir)
-            rospy.loginfo(f"Created visualization directory at: {vis_dir}")
+        csv_dir = os.path.join(os.getcwd(), "csv_data")
+        for d in [vis_dir, csv_dir]:
+            if not os.path.exists(d):
+                os.makedirs(d)
 
         # --- CONFIGURATION ---
         end_t = min(start_t + window_len, self.history_len)
         time_indices = np.arange(start_t, end_t)
+        i = 0  # Index 0 is Local Tool X
         
-        # We only care about Index 0 (Local Tool X)
-        i = 0 
-        label = 'Local Tool X'
-        unit_vel = 'm/s'
-        unit_acc = 'm/s^2'
+        # --- DATA EXTRACTION ---
+        full_vel_x = self._ee_vel_a_his[:, i]
+        full_acc_x = self._ee_accel_a_his[:, i]
+        
+        # 2. SAVE TO CSV
+        timestamp = rospy.get_time()
+        csv_path = os.path.join(csv_dir, f"push_data_x_{timestamp}.csv")
+        
+        with open(csv_path, mode='w') as f:
+            writer = csv.writer(f)
+            # Header: Step, Velocity_X (m/s), Acceleration_X (m/s^2)
+            writer.writerow(['step', 'velocity_x', 'acceleration_x'])
+            for step in range(self.history_len):
+                writer.writerow([step, full_vel_x[step], full_acc_x[step]])
+        
+        rospy.loginfo(f"Successfully saved raw X data to {csv_path}")
 
-        # Create two figures with a single subplot each
+        # --- 3. VISUALIZATION (Plotting code remains the same) ---
         fig_vel, ax_vel = plt.subplots(figsize=(10, 4))
-        fig_acc, ax_acc = plt.subplots(figsize=(10, 4))
-
-        # --- Velocity Data (X-axis) ---
-        full_vel = self._ee_vel_a_his[:, i]
-        win_vel = self._ee_vel_a_his[start_t:end_t, i]
-        
-        ax_vel.plot(full_vel, label='Full History', color='gray', alpha=0.3)
-        ax_vel.plot(time_indices, win_vel, 'b-o', label='Push Window', markersize=3)
-        ax_vel.set_ylabel(unit_vel)
-        ax_vel.set_title(f"Velocity: {label}")
-        ax_vel.set_xlabel("Time Step")
+        ax_vel.plot(full_vel_x, label='Full History', color='gray', alpha=0.3)
+        ax_vel.plot(time_indices, full_vel_x[start_t:end_t], 'b-o', label='Push Window', markersize=3)
+        ax_vel.set_title("Velocity: Local Tool X (Smoothed)")
+        ax_vel.set_ylabel("m/s")
         ax_vel.grid(True, alpha=0.3)
         ax_vel.legend()
 
-        # --- Acceleration Data (X-axis) ---
-        full_acc = self._ee_accel_a_his[:, i]
-        win_acc = self._ee_accel_a_his[start_t:end_t, i]
-        
-        ax_acc.plot(full_acc, label='Full History', color='gray', alpha=0.3)
-        ax_acc.plot(time_indices, win_acc, 'r-o', label='Push Window', markersize=3)
-        ax_acc.set_ylabel(unit_acc)
-        ax_acc.set_title(f"Acceleration: {label}")
-        ax_acc.set_xlabel("Time Step")
+        fig_acc, ax_acc = plt.subplots(figsize=(10, 4))
+        ax_acc.plot(full_acc_x, label='Full History', color='gray', alpha=0.3)
+        ax_acc.plot(time_indices, full_acc_x[start_t:end_t], 'r-o', label='Push Window', markersize=3)
+        ax_acc.set_title("Acceleration: Local Tool X")
+        ax_acc.set_ylabel("m/s^2")
         ax_acc.grid(True, alpha=0.3)
         ax_acc.legend()
 
-        fig_vel.tight_layout()
-        fig_acc.tight_layout()
-
-        # 2. Save the figures
-        timestamp = rospy.get_time()
-        vel_path = os.path.join(vis_dir, f"velocity_x_{timestamp}.png")
-        acc_path = os.path.join(vis_dir, f"acceleration_x_{timestamp}.png")
-        
-        fig_vel.savefig(vel_path)
-        fig_acc.savefig(acc_path)
-        
-        rospy.loginfo(f"Saved single-axis visualization to {vis_dir}")
+        fig_vel.savefig(os.path.join(vis_dir, f"velocity_x_{timestamp}.png"))
+        fig_acc.savefig(os.path.join(vis_dir, f"acceleration_x_{timestamp}.png"))
 
     def visualize_push_history_6_axes(self, start_t, window_len=50):
         """

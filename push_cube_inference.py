@@ -147,7 +147,7 @@ class PushCube():
         self._ee_vel_a_his = np.zeros((self.history_len, 6))
         self._ee_accel_a_his = np.zeros((self.history_len, 6))
         self._prev_ee_vel_w = np.zeros(6)
-        self.smoothing_window = 5
+        self.smoothing_window = 10
         self._vel_buffer = []
 
         self.t_before = 15
@@ -191,7 +191,7 @@ class PushCube():
         self.go_pushset_front()
         
         rospy.loginfo("PHASE 3: Pushing cube with velocity control")
-        self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.1, target_vel=0.03)
+        self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.2, target_vel=0.08)
         # self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.3875, target_vel=2.25)
         
         rospy.sleep(0.5)

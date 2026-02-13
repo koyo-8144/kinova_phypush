@@ -191,7 +191,8 @@ class PushCube():
         self.go_pushset_front()
         
         rospy.loginfo("PHASE 3: Pushing cube with velocity control")
-        self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.3875, target_vel=2.25)
+        self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.1, target_vel=0.03)
+        # self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.3875, target_vel=2.25)
         
         rospy.sleep(0.5)
 
@@ -355,7 +356,7 @@ class PushCube():
     def go_pushset_front(self):
         target_pose = Pose()
         target_pose.position.x = 0.4416
-        target_pose.position.y = 0.0630
+        target_pose.position.y = 0.1 # 0.0630
         target_pose.position.z= 0.0
         q = tf_trans.quaternion_from_euler(0, 1.5708, 0)
         target_pose.orientation.x, target_pose.orientation.y, target_pose.orientation.z, target_pose.orientation.w = q

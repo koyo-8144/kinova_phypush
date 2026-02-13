@@ -200,21 +200,22 @@ class PushCube():
         self.go_pushset_front()
         # start_pose = self.get_current_ee_pose_via_fk()
         
-        # # print("start_pose:", start_pose)
+        # print("start_pose:", start_pose)
+        self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.2, target_vel=0.08)
         # self.execute_velocity_push_front(direction_xy=[1.0, 0.0], push_dist=0.3875, target_vel=2.25)
-        # rospy.loginfo("PHASE 3: Pushing cube with velocity control")
-        # # direction_xy=[0.0, 1.0] moves the robot forward along the Y (Green) axis
+        rospy.loginfo("PHASE 3: Pushing cube with velocity control")
+        # direction_xy=[0.0, 1.0] moves the robot forward along the Y (Green) axis
         
-        # rospy.sleep(0.1)
+        rospy.sleep(0.1)
 
-        # # Identifies the window around peak impact
-        # start_t, _ = self.get_start_end_t(t_before=self.t_before, t_after=self.t_after)
-        # # Trigger the visualization
-        # rospy.loginfo("Visualizing Captured Histories...")
-        # self.visualize_push_history(start_t, window_len=self.t_after-self.t_before)
+        # Identifies the window around peak impact
+        start_t, _ = self.get_start_end_t(t_before=self.t_before, t_after=self.t_after)
+        # Trigger the visualization
+        rospy.loginfo("Visualizing Captured Histories...")
+        self.visualize_push_history(start_t, window_len=self.t_after-self.t_before)
 
-        # rospy.loginfo("PHASE 4: Moving to start position")
-        # self.go_sp()
+        rospy.loginfo("PHASE 4: Moving to start position")
+        self.go_sp()
         
         
     def execute_velocity_push_lr(self, direction_xy, push_dist, target_vel):
@@ -598,8 +599,69 @@ class PushCube():
         
         return int(start_t), int(end_t)
 
-
     def visualize_push_history(self, start_t, window_len=50):
+        """
+        Visualizes only the X-axis (Axis 0) of the End Effector Velocity and 
+        Acceleration in the Local Tool Frame.
+        """
+        # 1. Create the /vis directory if it doesn't exist
+        vis_dir = os.path.join(os.getcwd(), "vis")
+        if not os.path.exists(vis_dir):
+            os.makedirs(vis_dir)
+            rospy.loginfo(f"Created visualization directory at: {vis_dir}")
+
+        # --- CONFIGURATION ---
+        end_t = min(start_t + window_len, self.history_len)
+        time_indices = np.arange(start_t, end_t)
+        
+        # We only care about Index 0 (Local Tool X)
+        i = 0 
+        label = 'Local Tool X'
+        unit_vel = 'm/s'
+        unit_acc = 'm/s^2'
+
+        # Create two figures with a single subplot each
+        fig_vel, ax_vel = plt.subplots(figsize=(10, 4))
+        fig_acc, ax_acc = plt.subplots(figsize=(10, 4))
+
+        # --- Velocity Data (X-axis) ---
+        full_vel = self._ee_vel_a_his[:, i]
+        win_vel = self._ee_vel_a_his[start_t:end_t, i]
+        
+        ax_vel.plot(full_vel, label='Full History', color='gray', alpha=0.3)
+        ax_vel.plot(time_indices, win_vel, 'b-o', label='Push Window', markersize=3)
+        ax_vel.set_ylabel(unit_vel)
+        ax_vel.set_title(f"Velocity: {label}")
+        ax_vel.set_xlabel("Time Step")
+        ax_vel.grid(True, alpha=0.3)
+        ax_vel.legend()
+
+        # --- Acceleration Data (X-axis) ---
+        full_acc = self._ee_accel_a_his[:, i]
+        win_acc = self._ee_accel_a_his[start_t:end_t, i]
+        
+        ax_acc.plot(full_acc, label='Full History', color='gray', alpha=0.3)
+        ax_acc.plot(time_indices, win_acc, 'r-o', label='Push Window', markersize=3)
+        ax_acc.set_ylabel(unit_acc)
+        ax_acc.set_title(f"Acceleration: {label}")
+        ax_acc.set_xlabel("Time Step")
+        ax_acc.grid(True, alpha=0.3)
+        ax_acc.legend()
+
+        fig_vel.tight_layout()
+        fig_acc.tight_layout()
+
+        # 2. Save the figures
+        timestamp = rospy.get_time()
+        vel_path = os.path.join(vis_dir, f"velocity_x_{timestamp}.png")
+        acc_path = os.path.join(vis_dir, f"acceleration_x_{timestamp}.png")
+        
+        fig_vel.savefig(vel_path)
+        fig_acc.savefig(acc_path)
+        
+        rospy.loginfo(f"Saved single-axis visualization to {vis_dir}")
+
+    def visualize_push_history_6_axes(self, start_t, window_len=50):
         """
         Visualizes all 6 axes of the End Effector Velocity and Acceleration in the Local Tool Frame.
         Saves the output as PNG files in the /vis folder.
@@ -651,8 +713,8 @@ class PushCube():
 
         # 2. Save the figures
         timestamp = rospy.get_time()
-        vel_path = os.path.join(vis_dir, f"velocity_history_{timestamp}.png")
-        acc_path = os.path.join(vis_dir, f"acceleration_history_{timestamp}.png")
+        vel_path = os.path.join(vis_dir, f"velocity_history_6axes_{timestamp}.png")
+        acc_path = os.path.join(vis_dir, f"acceleration_history_6axes_{timestamp}.png")
         
         fig_vel.savefig(vel_path)
         fig_acc.savefig(acc_path)
@@ -700,7 +762,7 @@ class PushCube():
     def go_pushset_front(self):
         target_pose = Pose()
         target_pose.position.x = 0.4416
-        target_pose.position.y = 0.0630
+        target_pose.position.y = 0.1 # 0.0630
         target_pose.position.z = 0.0 # 0.0119
         
         # 2. Set orientation: Euler (0, 90deg, 0) or (0, 1.57, 0)
